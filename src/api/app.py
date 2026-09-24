@@ -1,7 +1,9 @@
 import os
 import sys
+import time
 from pathlib import Path
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 import requests
 from fastapi import FastAPI, HTTPException
@@ -10,9 +12,9 @@ from pydantic import BaseModel
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 app = FastAPI(
-    title="Hyperlocal Air Quality Engine",
-    description="Production Sensor Fusion API (OpenWeather + LightGBM)",
-    version="3.0.0",
+    title="Hyperlocal AQI Engine",
+    description="Production Sensor Fusion API (True Time-Series Lags)",
+    version="3.1.0",
 )
 
 MODEL_PATH = "models/lgbm_model.txt"
@@ -65,44 +67,74 @@ def health_check():
 def fetch_live_coordinate_data(payload: CoordinatePayload):
     lat, lon = payload.lat, payload.lon
 
-    # Direct Real-World Weather Call
-    w_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={API_KEY}&units=metric"
-    a_url = f"https://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={API_KEY}"
-
     try:
-        w_resp = requests.get(w_url, timeout=5)
-        a_resp = requests.get(a_url, timeout=5)
+        # Current Weather
+        w_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={API_KEY}&units=metric"
+        w_resp = requests.get(w_url, timeout=5).json()
 
-        if w_resp.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail="OpenWeather Weather Service Unavailable",
-            )
+        # Current Air Pollution
+        a_url = f"https://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={API_KEY}"
+        a_resp = requests.get(a_url, timeout=5).json()
 
-        w_data = w_resp.json()
-        
-        # Pollution API response extraction with zero synthetic fallback
-        if a_resp.status_code == 200:
-            a_data = a_resp.json()
-            pm2_5 = float(a_data["list"][0]["components"]["pm2_5"])
-            pm10 = float(a_data["list"][0]["components"]["pm10"])
-        else:
-            # Baseline regional safety values if Air Pollution station is out of coverage
-            pm2_5 = 42.0
-            pm10 = 75.0
+        # Past 24 Hours Air Pollution History for True Lags
+        end_time = int(time.time())
+        start_time = end_time - (25 * 3600)  # 25 hours back
+        h_url = f"https://api.openweathermap.org/data/2.5/air_pollution/history?lat={lat}&lon={lon}&start={start_time}&end={end_time}&appid={API_KEY}"
+        h_resp = requests.get(h_url, timeout=5).json()
+
+        pm25_series = []
+        if "list" in h_resp and len(h_resp["list"]) > 0:
+            pm25_series = [
+                item["components"]["pm2_5"] for item in h_resp["list"]
+            ]
+
+        # If historical list is shorter than 25, pad with current PM2.5 value naturally
+        current_pm25 = float(a_resp["list"][0]["components"]["pm2_5"])
+        while len(pm25_series) < 25:
+            pm25_series.insert(0, current_pm25)
+
+        # Compute True Rolling & Lag Stats
+        s = pd.Series(pm25_series)
+        lag_1 = float(s.iloc[-1])
+        lag_2 = float(s.iloc[-2])
+        lag_3 = float(s.iloc[-3])
+        lag_6 = float(s.iloc[-6])
+        lag_12 = float(s.iloc[-12])
+        lag_24 = float(s.iloc[-24])
+
+        roll_mean_3h = float(s.tail(3).mean())
+        roll_std_3h = float(s.tail(3).std(ddof=0))
+        roll_mean_6h = float(s.tail(6).mean())
+        roll_std_6h = float(s.tail(6).std(ddof=0))
+        roll_mean_24h = float(s.tail(24).mean())
+        roll_std_24h = float(s.tail(24).std(ddof=0))
 
         return {
-            "temp": float(w_data["main"]["temp"]),
-            "humidity": float(w_data["main"]["humidity"]),
-            "wind_speed": float(w_data["wind"]["speed"]),
-            "wind_deg": float(w_data["wind"].get("deg", 180.0)),
-            "pm2_5": pm2_5,
-            "pm10": pm10,
-            "location_name": w_data.get("name", "Grid Station"),
+            "temp": float(w_resp["main"]["temp"]),
+            "humidity": float(w_resp["main"]["humidity"]),
+            "wind_speed": float(w_resp["wind"]["speed"]),
+            "wind_deg": float(w_resp["wind"].get("deg", 180.0)),
+            "pm2_5": current_pm25,
+            "pm10": float(a_resp["list"][0]["components"]["pm10"]),
+            "location_name": w_resp.get("name", "Grid Station"),
+            "lags": {
+                "lag_1": lag_1,
+                "lag_2": lag_2,
+                "lag_3": lag_3,
+                "lag_6": lag_6,
+                "lag_12": lag_12,
+                "lag_24": lag_24,
+                "roll_mean_3h": roll_mean_3h,
+                "roll_std_3h": roll_std_3h,
+                "roll_mean_6h": roll_mean_6h,
+                "roll_std_6h": roll_std_6h,
+                "roll_mean_24h": roll_mean_24h,
+                "roll_std_24h": roll_std_24h,
+            },
         }
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         raise HTTPException(
-            status_code=503, detail=f"Live API Network Fetch Error: {str(e)}"
+            status_code=502, detail=f"API Fetch Error: {str(e)}"
         )
 
 
