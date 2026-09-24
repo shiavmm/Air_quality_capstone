@@ -13,3 +13,6 @@ mlflow
 pytest
 python-dotenv
 requests
+shap
+folium
+streamlit-folium

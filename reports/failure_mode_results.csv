@@ -1,0 +1,6 @@
+scenario,injected_nulls,remaining_nulls,passed,note
+Short Sensor Dropout (2h),2,0,True,2h gap <= 3h limit -> forward-fill should recover all.
+Long Sensor Dropout (5h),5,2,True,5h gap > 3h limit -> some NaN must remain (no false fill).
+Negative Sensor Readings,3,0,True,"Negative values must be replaced with NaN, never kept."
+Humidity Out-of-Range,2,0,True,"Humidity must be clipped to [0, 100]."
+API Timeout Simulation,0,0,True,Connection/timeout error raised correctly - caller must handle.
