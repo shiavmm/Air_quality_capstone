@@ -35,7 +35,7 @@ bds-07-air-quality/
 
 ### 2. Clone & Install
 ```bash
-git clone https://github.com/samikshakanade1210-cmd/bds-07-air-quality.git
+git clone https://github.com/shiavmm/Air_quality_capstone.git
 cd bds-07-air-quality
 pip install -r requirements.txt
 ```
