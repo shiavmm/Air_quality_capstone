@@ -24,10 +24,19 @@ app = FastAPI(
 
 MODEL_PATH = "models/lgbm_model.txt"
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
+WAQI_TOKEN = os.getenv("WAQI_API_TOKEN")
 
 if not API_KEY:
     import warnings
     warnings.warn("OPENWEATHER_API_KEY missing! Add it to your .env file. Live fetch will fail.", stacklevel=1)
+
+if not WAQI_TOKEN:
+    import warnings
+    warnings.warn(
+        "WAQI_API_TOKEN missing! Ground-station PM2.5 will not be available. "
+        "Get a free token at https://aqicn.org/data-platform/token/ and add it to .env",
+        stacklevel=1,
+    )
 
 if os.path.exists(MODEL_PATH):
     model = lgb.Booster(model_file=MODEL_PATH)
@@ -39,6 +48,72 @@ if os.path.exists(MODEL_PATH):
 else:
     model = None
     explainer = None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# WAQI ground-station helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def aqi_subindex_to_pm25(aqi_val: float) -> float:
+    """Reverse EPA breakpoint: convert PM2.5 AQI sub-index → µg/m³."""
+    bp = [
+        (0,   50,  0.0,   12.0),
+        (51,  100, 12.1,  35.4),
+        (101, 150, 35.5,  55.4),
+        (151, 200, 55.5,  150.4),
+        (201, 300, 150.5, 250.4),
+        (301, 500, 250.5, 500.4),
+    ]
+    for i_lo, i_hi, c_lo, c_hi in bp:
+        if i_lo <= aqi_val <= i_hi:
+            return round(((c_hi - c_lo) / (i_hi - i_lo)) * (aqi_val - i_lo) + c_lo, 1)
+    return round(max(0, aqi_val / 1.5), 1)
+
+
+def aqi_subindex_to_pm10(aqi_val: float) -> float:
+    """Reverse EPA breakpoint: convert PM10 AQI sub-index → µg/m³."""
+    bp = [
+        (0,   50,  0,   54),
+        (51,  100, 55,  154),
+        (101, 150, 155, 254),
+        (151, 200, 255, 354),
+        (201, 300, 355, 424),
+        (301, 500, 425, 604),
+    ]
+    for i_lo, i_hi, c_lo, c_hi in bp:
+        if i_lo <= aqi_val <= i_hi:
+            return round(((c_hi - c_lo) / (i_hi - i_lo)) * (aqi_val - i_lo) + c_lo, 1)
+    return round(max(0, aqi_val), 1)
+
+
+def fetch_waqi_data(lat: float, lon: float) -> dict | None:
+    """Fetch ground-station air quality from WAQI API. Returns dict or None."""
+    if not WAQI_TOKEN:
+        return None
+    try:
+        url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={WAQI_TOKEN}"
+        resp = requests.get(url, timeout=10).json()
+        if resp.get("status") != "ok":
+            print(f"WAQI API error: {resp.get('data', 'unknown')}")
+            return None
+
+        data = resp["data"]
+        iaqi = data.get("iaqi", {})
+
+        result = {
+            "station_name": data.get("city", {}).get("name", "WAQI Station"),
+        }
+
+        # Convert pollutant AQI sub-indices → raw µg/m³ concentrations
+        if "pm25" in iaqi:
+            result["pm2_5"] = aqi_subindex_to_pm25(float(iaqi["pm25"]["v"]))
+        if "pm10" in iaqi:
+            result["pm10"] = aqi_subindex_to_pm10(float(iaqi["pm10"]["v"]))
+
+        return result
+    except Exception as e:
+        print(f"WAQI fetch failed: {e}")
+        return None
 
 
 class CoordinatePayload(BaseModel):
@@ -123,9 +198,37 @@ def fetch_live_coordinate_data(payload: CoordinatePayload):
             ]
 
         # If historical list is shorter than 25, pad with current PM2.5 value naturally
-        current_pm25 = float(a_resp["list"][0]["components"]["pm2_5"])
+        owm_pm25 = float(a_resp["list"][0]["components"]["pm2_5"])
         while len(pm25_series) < 25:
-            pm25_series.insert(0, current_pm25)
+            pm25_series.insert(0, owm_pm25)
+
+        # ── WAQI Ground-Station Fusion ──────────────────────────────────
+        # Try WAQI for accurate ground-station PM2.5/PM10, calibrate
+        # the OWM historical series so lag features stay consistent.
+        components = a_resp["list"][0].get("components", {})
+        current_pm25 = owm_pm25
+        current_pm10 = float(components.get("pm10", 50.0))
+        data_source = "owm"
+        station_name = ""
+
+        waqi = fetch_waqi_data(lat, lon)
+        if waqi and "pm2_5" in waqi:
+            ground_pm25 = waqi["pm2_5"]
+            # Calibrate historical series to match ground truth
+            if owm_pm25 > 0.5:
+                cal_factor = ground_pm25 / owm_pm25
+                pm25_series = [v * cal_factor for v in pm25_series]
+            else:
+                # OWM near-zero → apply additive offset instead
+                offset = ground_pm25 - owm_pm25
+                pm25_series = [max(0, v + offset) for v in pm25_series]
+            current_pm25 = ground_pm25
+            data_source = "waqi+owm"
+            station_name = waqi.get("station_name", "")
+            print(f"✅ WAQI fusion: PM2.5 {owm_pm25:.1f}→{ground_pm25:.1f} µg/m³ (station: {station_name})")
+
+            if "pm10" in waqi:
+                current_pm10 = waqi["pm10"]
 
         # Compute True Rolling & Lag Stats
         s = pd.Series(pm25_series)
@@ -143,7 +246,8 @@ def fetch_live_coordinate_data(payload: CoordinatePayload):
         roll_mean_24h = float(s.tail(24).mean())
         roll_std_24h = float(s.tail(24).std(ddof=0))
 
-        components = a_resp["list"][0].get("components", {})
+        location_name = unicodedata.normalize("NFKD", str(w_resp.get("name", "Grid Station"))).encode("ascii", "ignore").decode("ascii") or "Grid Station"
+
         return {
             "lat": lat,
             "lon": lon,
@@ -153,11 +257,13 @@ def fetch_live_coordinate_data(payload: CoordinatePayload):
             "wind_speed": float(w_resp["wind"]["speed"]),
             "wind_deg": float(w_resp["wind"].get("deg", 180.0)),
             "pm2_5": current_pm25,
-            "pm10": float(components.get("pm10", 50.0)),
+            "pm10": current_pm10,
             "no2": float(components.get("no2", 20.0)),
             "so2": float(components.get("so2", 10.0)),
             "co": float(components.get("co", 500.0)),
-            "location_name": unicodedata.normalize("NFKD", str(w_resp.get("name", "Grid Station"))).encode("ascii", "ignore").decode("ascii") or "Grid Station",
+            "location_name": location_name,
+            "data_source": data_source,
+            "station_name": station_name,
             "lags": {
                 "lag_1": lag_1,
                 "lag_2": lag_2,

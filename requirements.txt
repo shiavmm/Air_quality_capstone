@@ -14,5 +14,6 @@ pytest
 python-dotenv
 requests
 shap
+plotly
 folium
 streamlit-folium

@@ -9,6 +9,7 @@ Run:
 import os
 import numpy as np
 import pandas as pd
+from datetime import datetime
 
 CITIES = {
     "Delhi":     {"lat": 28.6139, "lon": 77.2090, "base_pm25": 85.0, "base_temp": 33.0},
@@ -19,7 +20,9 @@ CITIES = {
 def generate_city_data(city: str, meta: dict, n_hours: int = 1440) -> pd.DataFrame:
     """Generate realistic synthetic hourly air quality data for one city."""
     rng = np.random.default_rng(hash(city) % (2**31))
-    timestamps = pd.date_range("2024-04-01", periods=n_hours, freq="1h")
+    # End at the current hour so "Last 7 Days" shows recent dates
+    end = pd.Timestamp(datetime.now().replace(minute=0, second=0, microsecond=0))
+    timestamps = pd.date_range(end=end, periods=n_hours, freq="1h")
     hours = timestamps.hour.values
 
     # Diurnal PM2.5 pattern: higher at rush hours (7-9am, 5-8pm), lower at night
@@ -33,7 +36,19 @@ def generate_city_data(city: str, meta: dict, n_hours: int = 1440) -> pd.DataFra
     trend = 10 * np.sin(2 * np.pi * t / (24 * 7))
     noise = rng.normal(0, 6, n_hours)
 
-    pm25 = np.clip(meta["base_pm25"] + diurnal + trend + noise, 2, 400)
+    # Seasonal PM2.5 variation: lower in monsoon (Jun-Sep), higher in winter (Nov-Feb)
+    months = timestamps.month.values
+    seasonal = np.where(
+        (months >= 6) & (months <= 9),
+        -meta["base_pm25"] * 0.35,   # monsoon: 35 % lower
+        np.where(
+            (months >= 11) | (months <= 2),
+            meta["base_pm25"] * 0.40,  # winter: 40 % higher
+            0.0,
+        ),
+    )
+
+    pm25 = np.clip(meta["base_pm25"] + seasonal + diurnal + trend + noise, 2, 400)
     pm10 = np.clip(pm25 * 1.8 + rng.normal(0, 10, n_hours), 5, 600)
     no2  = np.clip(20 + 8 * np.sin(2 * np.pi * hours / 24) + rng.normal(0, 3, n_hours), 0, 200)
     so2  = np.clip(5 + rng.normal(0, 1.5, n_hours), 0, 50)
