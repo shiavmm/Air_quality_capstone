@@ -77,7 +77,7 @@ st.markdown("""
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif !important;
 }
-.block-container { padding: 1rem 2rem 3rem 2rem !important; max-width: 1400px; }
+.block-container { padding: 4rem 2rem 3rem 2rem !important; max-width: 1400px; }
 
 /* ───── Tabs ───── */
 .stTabs [data-baseweb="tab-list"] {
