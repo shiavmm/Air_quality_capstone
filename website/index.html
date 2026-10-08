@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BDS-07 | Hyperlocal Air Quality Forecasting</title>
+  <meta name="description" content="An end-to-end ML pipeline that predicts next-hour PM2.5 concentrations for Delhi, Mumbai, and Bengaluru using LightGBM with SHAP explainability.">
+  <meta property="og:title" content="BDS-07: Hyperlocal Air Quality Forecasting">
+  <meta property="og:description" content="Next-hour PM2.5 predictions for Delhi, Mumbai, and Bengaluru using LightGBM with SHAP explainability.">
+  <meta property="og:type" content="website">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231b6b5a'/%3E%3Ctext x='16' y='21' text-anchor='middle' fill='white' font-family='sans-serif' font-size='14' font-weight='700'%3EAQ%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <a href="#" class="logo">BDS-07 <span>Air Quality Forecasting</span></a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <nav id="main-nav">
+        <ul>
+          <li><a href="#method">Method</a></li>
+          <li><a href="#results">Results</a></li>
+          <li><a href="#system">System</a></li>
+          <li><a href="#resources">Resources</a></li>
+          <li><a href="https://github.com/shiavmm/Air_quality_capstone" target="_blank" rel="noopener">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- Intro -->
+    <section class="intro" id="overview">
+      <div class="container">
+        <span class="label">Capstone Project / B.Sc. Data Science, Semester V</span>
+        <h1>Hyperlocal Air Quality<br>Forecasting</h1>
+        <p class="lead">
+          An end-to-end ML pipeline that predicts next-hour PM2.5 concentrations
+          for Delhi, Mumbai, and Bengaluru. Fuses live OpenWeather sensor data with
+          24-hour autoregressive features, trains a LightGBM regressor, and serves
+          explainable predictions through a FastAPI backend and Streamlit dashboard.
+        </p>
+        <div class="actions">
+          <a href="https://github.com/shiavmm/Air_quality_capstone" class="btn btn-primary" target="_blank" rel="noopener">View on GitHub</a>
+          <a href="#results" class="btn btn-secondary">View Results</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Problem -->
+    <section class="offset" id="problem">
+      <div class="container">
+        <h2>The Problem</h2>
+        <div class="problem-grid">
+          <div>
+            <p>
+              Public air quality dashboards report a single AQI number for an entire
+              metropolitan area. A commuter in Andheri sees the same reading as
+              someone 30km away in Navi Mumbai, even though local pollution levels can
+              differ significantly due to traffic, construction, and wind patterns.
+            </p>
+            <p>
+              These dashboards also only show current conditions. They do not predict
+              what the air quality will be in the next hour, which is the information
+              people actually need to plan outdoor activities, commutes, or exercise.
+            </p>
+            <p>
+              This project addresses both gaps: coordinate-level, next-hour PM2.5
+              predictions backed by real atmospheric data, temporal feature engineering,
+              and model explainability so users and researchers can understand what is
+              driving each forecast.
+            </p>
+          </div>
+          <aside class="aqi-scale">
+            <h4>India CPCB PM2.5 Scale</h4>
+            <div class="aqi-band" style="background: #55a868; color: #fff;">
+              <span>Good</span><span class="range">0-30 &#181;g/m&#179;</span>
+            </div>
+            <div class="aqi-band" style="background: #a7c957; color: #1a1a1a;">
+              <span>Satisfactory</span><span class="range">30-60</span>
+            </div>
+            <div class="aqi-band" style="background: #f4a261; color: #1a1a1a;">
+              <span>Moderate</span><span class="range">60-90</span>
+            </div>
+            <div class="aqi-band" style="background: #e76f51; color: #fff;">
+              <span>Poor</span><span class="range">90-120</span>
+            </div>
+            <div class="aqi-band" style="background: #9b2226; color: #fff;">
+              <span>Severe</span><span class="range">120-250</span>
+            </div>
+            <div class="aqi-band" style="background: #3d0814; color: #fff;">
+              <span>Hazardous</span><span class="range">&gt;250</span>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- Method -->
+    <section id="method">
+      <div class="container">
+        <h2>How It Works</h2>
+        <p class="section-desc">The pipeline runs in five stages, from raw API data to an interactive dashboard.</p>
+        <div class="pipeline-list">
+          <div class="pipeline-step">
+            <div>
+              <h3>Data Ingestion</h3>
+              <p>
+                Fetches live PM2.5, PM10, NO2, SO2, CO, temperature, humidity, pressure,
+                wind speed, and wind direction from the OpenWeather Air Pollution and
+                Weather APIs. Covers Delhi, Mumbai, and Bengaluru at hourly resolution.
+              </p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div>
+              <h3>Data Quality</h3>
+              <p>
+                Applies validation gates: negative pollutant values are set to NaN,
+                humidity is bounded to 0-100%, short sensor gaps (3 hours or less) are
+                forward-filled, and longer gaps remain NaN to avoid silent imputation.
+              </p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div>
+              <h3>Feature Engineering</h3>
+              <p>
+                Converts circular wind direction to Cartesian vectors (u, v). Encodes
+                hour-of-day as sine/cosine to preserve cyclical continuity. Generates
+                autoregressive lags (t-1 through t-24) and rolling statistics (3h, 6h,
+                24h windows) for PM2.5.
+              </p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div>
+              <h3>Model Training</h3>
+              <p>
+                Trains a LightGBM gradient-boosted regressor on the processed features.
+                Uses a chronological 80/20 split with a 24-hour purge gap between train
+                and test sets to prevent data leakage through lag features.
+              </p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <div>
+              <h3>Explainability and Serving</h3>
+              <p>
+                TreeSHAP computes exact Shapley values for each prediction, attributing
+                the forecast to specific input features. The model is served through a
+                FastAPI microservice, with a Streamlit dashboard for interactive
+                forecasting and trend analysis.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results -->
+    <section class="offset" id="results">
+      <div class="container">
+        <h2>Model Results</h2>
+        <table class="results-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>MAE (&#181;g/m&#179;)</th>
+              <th>vs. Baseline</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Tier 1: Persistence Baseline</td>
+              <td>47.07</td>
+              <td>Baseline</td>
+            </tr>
+            <tr>
+              <td>Tier 2: 24h Rolling Naive</td>
+              <td>~41.0</td>
+              <td>~13%</td>
+            </tr>
+            <tr class="highlight">
+              <td>Tier 3: LightGBM (this project)</td>
+              <td>35.73</td>
+              <td>24.1%</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="results-note">
+          Evaluated using Mean Absolute Error on a chronological hold-out set.
+          The 24-hour purge gap between training and test data prevents temporal
+          leakage through autoregressive lag features.
+        </p>
+
+        <div class="explainability-grid reveal">
+          <figure class="shap-figure">
+            <img src="assets/shap_summary.png" alt="SHAP feature importance summary plot showing lag features and temporal variables as top predictors" loading="lazy">
+            <figcaption>Global SHAP summary: feature contributions across all test predictions</figcaption>
+          </figure>
+          <div>
+            <h3 style="margin-bottom: 16px;">What Drives Each Prediction</h3>
+            <ul class="findings-list">
+              <li>
+                <strong>Pollution momentum</strong>
+                pm2_5_lag_1 and short-window rolling means are the strongest
+                predictors. Recent pollution levels are the best indicator of
+                near-future concentrations.
+              </li>
+              <li>
+                <strong>Diurnal patterns</strong>
+                Sine and cosine hour encodings capture rush-hour peaks and
+                overnight lows. The model learns that PM2.5 rises during morning
+                and evening traffic windows.
+              </li>
+              <li>
+                <strong>Wind dispersion</strong>
+                The u_wind and v_wind Cartesian components contribute measurably.
+                Higher wind speeds correlate with lower PM2.5 due to atmospheric
+                dispersion.
+              </li>
+              <li>
+                <strong>Cross-pollutant signals</strong>
+                NO2 and CO readings provide supplementary information about
+                combustion-related pollution sources near the measurement point.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- System & Stack -->
+    <section id="system">
+      <div class="container">
+        <h2>System Architecture</h2>
+        <p class="section-desc">
+          The trained model runs behind a FastAPI server. The Streamlit dashboard
+          connects to it for live forecasting, geospatial mapping, and trend analysis.
+          The API also supports WAQI ground-station fusion, calibrating OpenWeather
+          satellite estimates against nearby monitoring stations when available.
+        </p>
+        <div class="stack-grid">
+          <div class="stack-category">
+            <h3>Machine Learning</h3>
+            <ul>
+              <li>LightGBM</li>
+              <li>scikit-learn</li>
+              <li>SHAP (TreeSHAP)</li>
+              <li>statsmodels (STL decomposition)</li>
+            </ul>
+          </div>
+          <div class="stack-category">
+            <h3>Infrastructure</h3>
+            <ul>
+              <li>FastAPI + Uvicorn</li>
+              <li>Streamlit</li>
+              <li>MLflow (SQLite backend)</li>
+              <li>pytest</li>
+            </ul>
+          </div>
+          <div class="stack-category">
+            <h3>Data Sources</h3>
+            <ul>
+              <li>OpenWeather Air Pollution API</li>
+              <li>OpenWeather Weather API</li>
+              <li>WAQI ground-station API</li>
+              <li>GeoPandas + Folium (mapping)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Resources -->
+    <section class="offset" id="resources">
+      <div class="container">
+        <h2>Documentation</h2>
+        <p class="section-desc">
+          Project documentation covering the model specification, data schema,
+          risk analysis, and product requirements.
+        </p>
+        <div class="resources-grid">
+          <a href="https://github.com/shiavmm/Air_quality_capstone/blob/main/docs/MODEL_CARD.md" class="resource-link" target="_blank" rel="noopener">
+            <h3>Model Card</h3>
+            <p>Architecture, parameters, evaluation, limitations, and fairness considerations.</p>
+          </a>
+          <a href="https://github.com/shiavmm/Air_quality_capstone/blob/main/docs/DATA_DICTIONARY.md" class="resource-link" target="_blank" rel="noopener">
+            <h3>Data Dictionary</h3>
+            <p>Complete schema for raw and processed datasets, including units and transformations.</p>
+          </a>
+          <a href="https://github.com/shiavmm/Air_quality_capstone/blob/main/docs/FAILURE_MODE_ANALYSIS.md" class="resource-link" target="_blank" rel="noopener">
+            <h3>Failure Mode Analysis</h3>
+            <p>Sensor dropout handling, data quality gates, and degradation scenarios.</p>
+          </a>
+          <a href="https://github.com/shiavmm/Air_quality_capstone/blob/main/docs/USER_STORIES.md" class="resource-link" target="_blank" rel="noopener">
+            <h3>User Stories</h3>
+            <p>Product backlog with personas, acceptance criteria, and misuse cases.</p>
+          </a>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-left">
+        <strong>BDS-07</strong>
+        <p>T.Y. B.Sc. Data Science, Semester V Capstone Project</p>
+      </div>
+      <div class="footer-links">
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="terms.html">Terms</a>
+        <a href="https://github.com/shiavmm/Air_quality_capstone" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -13,7 +13,7 @@ from streamlit_folium import st_folium
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from src.analysis.geo_map import build_aqi_map
+from src.analysis.geo_map import build_aqi_map, get_regional_station_network
 from src.analysis.trend_seasonality import (
     run_stl_decomposition,
     compute_summary_stats,
@@ -1041,83 +1041,125 @@ with tab3:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab4:
     st.markdown("""
-    <div class='section-header'>🗺️ Geospatial AQI Map</div>
-    <div class='section-subtext'>
-        Colour-coded markers scaled by PM2.5 concentration. Click any marker for detailed readings.
-        Heatmap overlay shows pollution gradient across monitored locations.
+    <div style='margin-bottom: 12px;'>
+        <h3 style='margin:0 0 6px 0; font-weight:700; color:#1a1a2e; font-size:1.35rem;'>
+            Geospatial heatmap of air quality and environmental stress across all monitored stations.
+        </h3>
+        <div style='color:#666; font-size:0.88rem;'>
+            High-density sensor network with coordinate-level PM2.5 readings, district-level breakdown, and active micro-zone telemetry.
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-    CITY_COORDS = {
-        "Delhi":     {"lat": 28.6139, "lon": 77.2090},
-        "Mumbai":    {"lat": 19.0760, "lon": 72.8777},
-        "Bengaluru": {"lat": 12.9716, "lon": 77.5946},
-    }
+    @st.cache_data(ttl=300)
+    def load_cached_station_data():
+        df_base = get_regional_station_network()
+        # Seamlessly merge any ingested CSV data
+        raw_csv = "data/raw/historical_sensor_fusion.csv"
+        if os.path.exists(raw_csv):
+            try:
+                df_ingested = pd.read_csv(raw_csv, parse_dates=["timestamp"])
+                latest_ingested = df_ingested.sort_values("timestamp").groupby("city").last().reset_index()
+                for _, irow in latest_ingested.iterrows():
+                    city_key = irow["city"]
+                    mask = df_base["station"].str.contains(city_key, case=False, na=False)
+                    if mask.any():
+                        df_base.loc[mask, "pm2_5"] = float(irow.get("pm2_5", 50.0))
+            except Exception:
+                pass
+        return df_base
 
-    data_path_raw = "data/raw/historical_sensor_fusion.csv"
-    map_data = []
+    all_stations_df = load_cached_station_data().copy()
 
-    if os.path.exists(data_path_raw):
-        df_raw = pd.read_csv(data_path_raw, parse_dates=["timestamp"])
-        latest = (
-            df_raw.sort_values("timestamp")
-            .groupby("city")
-            .last()
-            .reset_index()
-        )
-        for _, row in latest.iterrows():
-            city = row["city"]
-            coords = CITY_COORDS.get(city, {"lat": row.get("lat", 20.0), "lon": row.get("lon", 78.0)})
-            map_data.append({
-                "city":     city,
-                "lat":      coords["lat"],
-                "lon":      coords["lon"],
-                "pm2_5":    float(row.get("pm2_5", 0)),
-                "temp":     round(float(row.get("temp_celsius", row.get("temp", 25))), 1),
-                "humidity": float(row.get("humidity", 60)),
-            })
-    else:
-        st.info("💡 No ingested data found. Showing sample placeholder readings.")
-        map_data = [
-            {"city": "Delhi",     "lat": 28.6139, "lon": 77.2090, "pm2_5": 95.0,  "temp": 32, "humidity": 55},
-            {"city": "Mumbai",    "lat": 19.0760, "lon": 72.8777, "pm2_5": 48.0,  "temp": 29, "humidity": 78},
-            {"city": "Bengaluru", "lat": 12.9716, "lon": 77.5946, "pm2_5": 32.5,  "temp": 24, "humidity": 65},
-        ]
-
-    active_entry = {
-        "city": f"📍 {selected_zone} (Active)",
+    # Active micro-zone entry from session state
+    active_entry = pd.DataFrame([{
+        "station": f"📍 {selected_zone} (Active)",
+        "district": "Active Zone",
         "lat": float(lat),
         "lon": float(lon),
         "pm2_5": float(st.session_state.pm2_5),
-        "predicted_pm2_5": st.session_state.get("latest_prediction", None),
         "temp": round(float(temp_celsius), 1),
         "humidity": round(float(humidity), 1),
         "is_selected": True,
-    }
-    map_data = [active_entry] + [d for d in map_data if "(Active)" not in d.get("city", "")]
+    }])
+    map_df = pd.concat([active_entry, all_stations_df], ignore_index=True)
 
-    map_view_mode = st.radio(
-        "Map Perspective",
-        [f"🎯 Focus on Active Micro-Zone ({selected_zone})", "🇮🇳 Overview (All Monitored Cities)"],
-        horizontal=True,
-        key="map_perspective_toggle",
-    )
+    # Filter controls matching Image 2 layout
+    c_flt1, c_flt2, c_flt3, c_flt4 = st.columns([2.2, 2.2, 2.2, 1.4])
 
-    if "Focus on Active" in map_view_mode:
+    district_options = ["All Districts (Regional Grid)"] + sorted(list(all_stations_df["district"].unique()))
+    with c_flt1:
+        selected_district = st.selectbox("District", district_options, key="map_district_filter")
+
+    if selected_district.startswith("All"):
+        filtered_df = map_df
+    else:
+        filtered_df = map_df[(map_df["district"] == selected_district) | (map_df.get("is_selected", False))]
+
+    station_options = ["All Monitored Stations"] + sorted(list(filtered_df["station"].unique()))
+    with c_flt2:
+        chosen_station = st.selectbox("Station", station_options, key="map_station_filter")
+
+    if chosen_station != "All Monitored Stations":
+        render_df = filtered_df[filtered_df["station"] == chosen_station]
+    else:
+        render_df = filtered_df
+
+    with c_flt3:
+        map_perspective = st.selectbox(
+            "Map Perspective",
+            [
+                "🗺️ Regional Network (Maharashtra Grid)",
+                f"🎯 Focus on Active Micro-Zone ({selected_zone})",
+                "🇮🇳 All India Overview",
+            ],
+            key="map_perspective_select",
+        )
+
+    with c_flt4:
+        st.write("")
+        st.write("")
+        overlay_heat = st.checkbox("Heatmap Layer", value=False, help="Toggle continuous pollution gradient overlay")
+
+    # Center coordinates & zoom calculation
+    if "Focus on Active" in map_perspective:
         center_coords = (float(lat), float(lon))
         map_zoom = 11
-    else:
+    elif "All India" in map_perspective:
         center_coords = (20.5937, 78.9629)
         map_zoom = 5
+    elif chosen_station != "All Monitored Stations" and not render_df.empty:
+        center_coords = (float(render_df.iloc[0]["lat"]), float(render_df.iloc[0]["lon"]))
+        map_zoom = 12
+    elif not render_df.empty:
+        center_coords = (float(render_df["lat"].median()), float(render_df["lon"].median()))
+        map_zoom = 7
+    else:
+        center_coords = (18.5204, 73.8567)
+        map_zoom = 7
 
-    aqi_map = build_aqi_map(map_data, center=center_coords, zoom=map_zoom)
-    st_folium(aqi_map, width=None, height=520, returned_objects=[])
+    # Fast Folium Map Render (OpenStreetMap base, no Carto watermark, no API key needed)
+    aqi_map = build_aqi_map(
+        render_df,
+        center=center_coords,
+        zoom=map_zoom,
+        show_heatmap=overlay_heat,
+        active_station_name=selected_zone,
+    )
+    st_folium(aqi_map, width=None, height=540, returned_objects=[])
 
-    st.markdown("#### Latest Readings by Location")
-    if map_data:
-        summary_df = pd.DataFrame(map_data)[["city", "pm2_5", "temp", "humidity"]]
-        summary_df.columns = ["Location", "PM2.5 (µg/m³)", "Temp (°C)", "Humidity (%)"]
-        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    # Summary metrics
+    m1, m2, m3, m4 = st.columns(4)
+    valid_pm_series = render_df["pm2_5"].dropna()
+    m1.metric("Monitored Stations", len(render_df))
+    m2.metric("Mean PM2.5", f"{valid_pm_series.mean():.1f} µg/m³" if not valid_pm_series.empty else "—")
+    m3.metric("Peak PM2.5", f"{valid_pm_series.max():.1f} µg/m³" if not valid_pm_series.empty else "—")
+    m4.metric("Normal / Clean Stations (≤60)", f"{(valid_pm_series <= 60).sum()} ({(valid_pm_series <= 60).mean()*100:.0f}%)" if not valid_pm_series.empty else "—")
+
+    st.markdown("#### Station Readings Ledger")
+    display_ledger = render_df[["station", "district", "pm2_5", "temp", "humidity"]].copy()
+    display_ledger.columns = ["Station / Location", "District", "PM2.5 (µg/m³)", "Temp (°C)", "Humidity (%)"]
+    st.dataframe(display_ledger.sort_values(by="PM2.5 (µg/m³)", ascending=False), use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
